@@ -68,7 +68,7 @@
 //!   sizes.
 
 use crate::{Error, Memory, MAX_WASM_PAGES, PAGE_SIZE};
-pub use sp_core::MAX_POSSIBLE_ALLOCATION;
+use sp_core::{MAX_POSSIBLE_ALLOCATION, traits::CallContext};
 use sp_wasm_interface::{Pointer, WordSize};
 use std::{
 	cmp::{max, min},
@@ -102,9 +102,13 @@ const LOG_TARGET: &str = "wasm-heap";
 //
 // This number corresponds to the number of powers between the minimum possible allocation and
 // maximum possible allocation, or: 2^3...2^25 (both ends inclusive, hence 23).
-//const N_ORDERS: usize = 23;
+const N_ORDERS: usize = 23;
+
+// Max possible of orders.
+const N_MAX_ORDERS: usize = 32;
+
 // increase mem allocated
-const N_ORDERS: usize = 26;
+//const N_ORDERS: usize = 26;
 const MIN_POSSIBLE_ALLOCATION: u32 = 8; // 2^3 bytes, 8 bytes
 
 /// The exponent for the power of two sized block adjusted to the minimum size.
@@ -129,7 +133,7 @@ impl Order {
 	///
 	/// Returns `Err` if it is greater than the maximum supported order.
 	fn from_raw(order: u32) -> Result<Self, Error> {
-		if order < N_ORDERS as u32 {
+		if order < N_MAX_ORDERS as u32 {
 			Ok(Self(order))
 		} else {
 			Err(error("invalid order"))
@@ -141,9 +145,9 @@ impl Order {
 	/// The size is clamped, so that the following holds:
 	///
 	/// `MIN_POSSIBLE_ALLOCATION <= size <= MAX_POSSIBLE_ALLOCATION`
-	fn from_size(size: u32) -> Result<Self, Error> {
-		let clamped_size = if size > MAX_POSSIBLE_ALLOCATION {
-			log::warn!(target: LOG_TARGET, "going to fail due to allocating {:?}", size);
+	fn from_size(size: u32, max_possible_allocation: Option<u32>) -> Result<Self, Error> {
+		let max = max_possible_allocation.unwrap_or(MAX_POSSIBLE_ALLOCATION);
+		let clamped_size = if size > max_possible_allocation.unwrap_or(max) {
 			return Err(Error::RequestedAllocationTooLarge)
 		} else if size < MIN_POSSIBLE_ALLOCATION {
 			MIN_POSSIBLE_ALLOCATION
@@ -285,33 +289,92 @@ impl Header {
 	}
 }
 
+#[derive(Copy, Clone, Debug)]
+enum LinkedLists {
+	Onchain(FreeLists),
+	Offchain(FreeListsOffchain),
+}
+
+impl LinkedLists {
+	fn new() -> Self {
+		Self::Onchain(FreeLists{heads: [Link::Nil; N_ORDERS]})
+	}
+
+	fn new_offchain() -> Self {
+		Self::Offchain(FreeListsOffchain{heads: [Link::Nil; N_MAX_ORDERS]})
+	}
+
+	/// Replaces a given link for the specified order and returns the old one.
+	fn replace(self, order: Order, new: Link) -> Link {
+		match self {
+			Self::Onchain(mut list) => {
+				let prev = list[order];
+				list[order] = new;
+				prev
+			},
+			Self::Offchain(mut list) => {
+				let prev = list[order];
+				list[order] = new;
+				prev
+			},
+		}
+	}
+
+	fn get(self, order: Order) -> Link {
+		match self {
+			Self::Onchain(list) => list[order],
+			Self::Offchain(list) => list[order],
+		}
+	}
+
+	fn set(self, order: Order, link: Link) {
+		match self {
+			Self::Onchain(mut list) => {
+				list[order] = link;
+			},
+			Self::Offchain(mut list) => {
+				list[order] = link;
+			}
+		}
+	}
+}
+
 /// This struct represents a collection of intrusive linked lists for each order.
+#[derive(Copy, Clone, Debug)]
 struct FreeLists {
 	heads: [Link; N_ORDERS],
 }
 
-impl FreeLists {
-	/// Creates the free empty lists.
-	fn new() -> Self {
-		Self { heads: [Link::Nil; N_ORDERS] }
-	}
-
-	/// Replaces a given link for the specified order and returns the old one.
-	fn replace(&mut self, order: Order, new: Link) -> Link {
-		let prev = self[order];
-		self[order] = new;
-		prev
-	}
-}
-
+// TODO: refactor
 impl Index<Order> for FreeLists {
 	type Output = Link;
 	fn index(&self, index: Order) -> &Link {
 		&self.heads[index.0 as usize]
 	}
 }
-
 impl IndexMut<Order> for FreeLists {
+	fn index_mut(&mut self, index: Order) -> &mut Link {
+		&mut self.heads[index.0 as usize]
+	}
+}
+
+/// This structure represents a collection of intrusice linked lists for each order. To be used in
+/// the off-chain execution context.
+///
+/// TODO
+#[derive(Copy, Clone, Debug)]
+struct FreeListsOffchain {
+	heads: [Link; N_MAX_ORDERS],
+}
+
+// TODO: refactor
+impl Index<Order> for FreeListsOffchain {
+	type Output = Link;
+	fn index(&self, index: Order) -> &Link {
+		&self.heads[index.0 as usize]
+	}
+}
+impl IndexMut<Order> for FreeListsOffchain {
 	fn index_mut(&mut self, index: Order) -> &mut Link {
 		&mut self.heads[index.0 as usize]
 	}
@@ -361,10 +424,11 @@ fn pages_from_size(size: u64) -> Option<u32> {
 pub struct FreeingBumpHeapAllocator {
 	original_heap_base: u32,
 	bumper: u32,
-	free_lists: FreeLists,
+	free_lists: LinkedLists,
 	poisoned: bool,
 	last_observed_memory_size: u64,
 	stats: AllocationStats,
+	max_possible_allocation: Option<u32>,
 }
 
 impl Drop for FreeingBumpHeapAllocator {
@@ -379,16 +443,29 @@ impl FreeingBumpHeapAllocator {
 	/// # Arguments
 	///
 	/// - `heap_base` - the offset from the beginning of the linear memory where the heap starts.
-	pub fn new(heap_base: u32) -> Self {
+	pub fn new(heap_base: u32, max_possible_allocation: Option<u32>, context: CallContext) -> Self {
 		let aligned_heap_base = (heap_base + ALIGNMENT - 1) / ALIGNMENT * ALIGNMENT;
+
+		let free_lists = match context {
+			CallContext::Onchain => LinkedLists::new(),
+			CallContext::Offchain => LinkedLists::new_offchain(),
+		};
+
+		log::info!(
+			target: LOG_TARGET,
+			"Initializing new allocator with max_possible_allocation: {:?}. (context: {:?})",
+			max_possible_allocation,
+			context
+		);
 
 		FreeingBumpHeapAllocator {
 			original_heap_base: aligned_heap_base,
 			bumper: aligned_heap_base,
-			free_lists: FreeLists::new(),
+			free_lists,
 			poisoned: false,
 			last_observed_memory_size: 0,
 			stats: AllocationStats::default(),
+			max_possible_allocation,
 		}
 	}
 
@@ -419,9 +496,9 @@ impl FreeingBumpHeapAllocator {
 		let bomb = PoisonBomb { poisoned: &mut self.poisoned };
 
 		Self::observe_memory_size(&mut self.last_observed_memory_size, mem)?;
-		let order = Order::from_size(size)?;
+		let order = Order::from_size(size, self.max_possible_allocation)?;
 
-		let header_ptr: u32 = match self.free_lists[order] {
+		let header_ptr: u32 = match self.free_lists.get(order) {
 			Link::Ptr(header_ptr) => {
 				if (u64::from(header_ptr) + u64::from(order.size()) + u64::from(HEADER_SIZE)) >
 					mem.size()
@@ -433,7 +510,7 @@ impl FreeingBumpHeapAllocator {
 				let next_free = Header::read_from(mem, header_ptr)?
 					.into_free()
 					.ok_or_else(|| error("free list points to a occupied header"))?;
-				self.free_lists[order] = next_free;
+				self.free_lists.set(order, next_free);
 
 				header_ptr
 			},

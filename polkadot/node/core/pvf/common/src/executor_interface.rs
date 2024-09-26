@@ -27,7 +27,7 @@ use sc_executor_common::{
 	wasm_runtime::{HeapAllocStrategy, WasmModule as _},
 };
 use sc_executor_wasmtime::{Config, DeterministicStackLimit, Semantics, WasmtimeRuntime};
-use sp_core::storage::{ChildInfo, TrackedStorageKey};
+use sp_core::{traits::CallContext, storage::{ChildInfo, TrackedStorageKey}};
 use sp_externalities::MultiRemovalResults;
 use std::any::{Any, TypeId};
 
@@ -56,6 +56,7 @@ pub const DEFAULT_CONFIG: Config = Config {
 	semantics: Semantics {
 		heap_alloc_strategy: sc_executor_common::wasm_runtime::HeapAllocStrategy::Dynamic {
 			maximum_pages: Some(DEFAULT_HEAP_PAGES_ESTIMATE + EXTRA_HEAP_PAGES),
+			offchain_heap_max_allocation: None,
 		},
 
 		instantiation_strategy:
@@ -117,9 +118,12 @@ pub unsafe fn execute_artifact(
 
 	let mut ext = ValidationExternalities(extensions);
 
+	// TODO: embed context instead of hardcoding.
+	let context = CallContext::Onchain;
+
 	match sc_executor::with_externalities_safe(&mut ext, || {
 		let runtime = create_runtime_from_artifact_bytes(compiled_artifact_blob, executor_params)?;
-		runtime.new_instance()?.call("validate_block", params)
+		runtime.new_instance()?.call("validate_block", params, context)
 	}) {
 		Ok(Ok(ok)) => Ok(ok),
 		Ok(Err(err)) | Err(err) => Err(err),
@@ -163,6 +167,7 @@ pub fn params_to_wasmtime_semantics(par: &ExecutorParams) -> (Semantics, Determi
 			ExecutorParam::MaxMemoryPages(max_pages) =>
 				sem.heap_alloc_strategy = HeapAllocStrategy::Dynamic {
 					maximum_pages: Some((*max_pages).saturating_add(DEFAULT_HEAP_PAGES_ESTIMATE)),
+					offchain_heap_max_allocation: None,
 				},
 			ExecutorParam::StackLogicalMax(slm) => stack_limit.logical_max = *slm,
 			ExecutorParam::StackNativeMax(snm) => stack_limit.native_stack_max = *snm,

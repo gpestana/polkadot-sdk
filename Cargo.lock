@@ -17822,6 +17822,7 @@ dependencies = [
  "array-bytes",
  "assert_matches",
  "criterion",
+ "log",
  "num_cpus",
  "parity-scale-codec",
  "parking_lot 0.12.3",
@@ -17861,6 +17862,7 @@ dependencies = [
  "log",
  "polkavm 0.9.3",
  "sc-allocator",
+ "sp-core",
  "sp-maybe-compressed-blob",
  "sp-wasm-interface 20.0.0",
  "thiserror",
@@ -17874,6 +17876,7 @@ dependencies = [
  "log",
  "polkavm 0.9.3",
  "sc-executor-common",
+ "sp-core",
  "sp-wasm-interface 20.0.0",
 ]
 
@@ -17893,6 +17896,7 @@ dependencies = [
  "sc-allocator",
  "sc-executor-common",
  "sc-runtime-test",
+ "sp-core",
  "sp-io",
  "sp-runtime-interface 24.0.0",
  "sp-wasm-interface 20.0.0",
