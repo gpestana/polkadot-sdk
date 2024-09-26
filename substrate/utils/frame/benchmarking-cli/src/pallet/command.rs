@@ -755,7 +755,7 @@ impl PalletCmd {
 	/// Allocation strategy for pallet benchmarking.
 	fn alloc_strategy(&self, runtime_heap_pages: Option<u64>) -> HeapAllocStrategy {
 		self.heap_pages.or(runtime_heap_pages).map_or(DEFAULT_HEAP_ALLOC_STRATEGY, |p| {
-			HeapAllocStrategy::Static { extra_pages: p as _ }
+			HeapAllocStrategy::Static { extra_pages: p as _, offchain_heap_max_allocation: None }
 		})
 	}
 

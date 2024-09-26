@@ -30,7 +30,7 @@ use sc_executor_common::{
 	wasm_runtime::{HeapAllocStrategy, WasmInstance, WasmModule},
 };
 use schnellru::{ByLength, LruMap};
-use sp_core::traits::{Externalities, FetchRuntimeCode, RuntimeCode};
+use sp_core::traits::{Externalities, FetchRuntimeCode, RuntimeCode, CallContext};
 use sp_version::RuntimeVersion;
 use sp_wasm_interface::HostFunctions;
 
@@ -270,7 +270,6 @@ impl RuntimeCache {
 					tracing::warn!(target: "wasm-runtime", error = ?err, "Cannot create a runtime");
 				},
 			}
-
 			let versioned_runtime = Arc::new(result?);
 
 			// Save new versioned wasm runtime in cache
@@ -419,11 +418,15 @@ where
 			// variable.
 			let mut ext = AssertUnwindSafe(ext);
 
+			// TODO: remove overwrite of context?
+			let context = CallContext::Onchain;
+
 			// The following unwind safety assertion is OK because if the method call panics, the
 			// runtime will be dropped.
 			let runtime = AssertUnwindSafe(runtime.as_ref());
 			crate::executor::with_externalities_safe(&mut **ext, move || {
-				runtime.new_instance()?.call("Core_version".into(), &[])
+				runtime.new_instance()?.call("Core_version".into(), &[], context)
+
 			})
 			.map_err(|_| WasmError::Instantiation("panic in call to get runtime version".into()))?
 		};

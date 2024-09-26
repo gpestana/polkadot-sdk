@@ -21,13 +21,26 @@
 use crate::error::Error;
 
 pub use sc_allocator::AllocationStats;
+pub use sp_core::traits::CallContext;
 
-/// Default heap allocation strategy.
-pub const DEFAULT_HEAP_ALLOC_STRATEGY: HeapAllocStrategy =
-	HeapAllocStrategy::Static { extra_pages: DEFAULT_HEAP_ALLOC_PAGES };
+/// Default heap allocation strategy for onchain execution.
+pub const DEFAULT_HEAP_ALLOC_STRATEGY: HeapAllocStrategy = HeapAllocStrategy::Static {
+	extra_pages: DEFAULT_HEAP_ALLOC_PAGES,
+	offchain_heap_max_allocation: None,
+};
+/// Default heap allocation strategy for offchain execution.
+pub const DEFAULT_OFFCHAIN_HEAP_ALLOC_STRATEGY: HeapAllocStrategy = HeapAllocStrategy::Static {
+	extra_pages: DEFAULT_OFFCHAIN_HEAP_PAGES,
+	offchain_heap_max_allocation: Some(DEFAULT_OFFCHAIN_HEAP_MAX_ALLOCATION),
+};
 
 /// Default heap allocation pages.
 pub const DEFAULT_HEAP_ALLOC_PAGES: u32 = 2048;
+/// The default extra heap pages for offchain execution, which is 30x the default extra pages for
+/// onchain execution.
+pub const DEFAULT_OFFCHAIN_HEAP_PAGES: u32 = 61440;
+/// The default max allocation for offchain execution is 3GiB.
+pub const DEFAULT_OFFCHAIN_HEAP_MAX_ALLOCATION: u32 = 3221225472;
 
 /// A trait that defines an abstract WASM runtime module.
 ///
@@ -46,8 +59,10 @@ pub trait WasmInstance: Send {
 	/// Before execution, instance is reset.
 	///
 	/// Returns the encoded result on success.
-	fn call(&mut self, method: &str, data: &[u8]) -> Result<Vec<u8>, Error> {
-		self.call_with_allocation_stats(method, data).0
+	fn call(&mut self, method: &str, data: &[u8], context: CallContext) -> Result<Vec<u8>, Error> {
+		// TODO(remove)
+		log::info!(target: "wasm-heap", "___ WasmInstance::call with context {:?}", context);
+		self.call_with_allocation_stats(method, data, context).0
 	}
 
 	/// Call a method on this WASM instance.
@@ -59,6 +74,7 @@ pub trait WasmInstance: Send {
 		&mut self,
 		method: &str,
 		data: &[u8],
+		context: CallContext,
 	) -> (Result<Vec<u8>, Error>, Option<AllocationStats>);
 
 	/// Call an exported method on this WASM instance.
@@ -66,8 +82,8 @@ pub trait WasmInstance: Send {
 	/// Before execution, instance is reset.
 	///
 	/// Returns the encoded result on success.
-	fn call_export(&mut self, method: &str, data: &[u8]) -> Result<Vec<u8>, Error> {
-		self.call(method.into(), data)
+	fn call_export(&mut self, method: &str, data: &[u8], context: CallContext) -> Result<Vec<u8>, Error> {
+		self.call(method.into(), data, context)
 	}
 }
 
@@ -84,6 +100,9 @@ pub enum HeapAllocStrategy {
 		/// The number of pages that will be added on top of the initial heap pages requested by
 		/// the wasm file.
 		extra_pages: u32,
+		/// Overwrite the maximum possible heap allocation in the offchain context if different
+		/// than `None`.
+		offchain_heap_max_allocation: Option<u32>,
 	},
 	/// Allocate the initial heap pages as requested by the wasm file and then allow it to grow
 	/// dynamically.
@@ -94,5 +113,8 @@ pub enum HeapAllocStrategy {
 		/// When `None` the linear memory will be allowed to grow up to the maximum limit supported
 		/// by WASM (4GB).
 		maximum_pages: Option<u32>,
+		/// Overwrite the maximum possible heap allocation in the offchain context if different
+		/// than `None`.
+		offchain_heap_max_allocation: Option<u32>,
 	},
 }

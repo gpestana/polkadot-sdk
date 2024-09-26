@@ -34,6 +34,7 @@ anyhow = { workspace = true }
 sc-allocator = { workspace = true, default-features = true }
 sc-executor-common = { workspace = true, default-features = true }
 sp-runtime-interface = { workspace = true, default-features = true }
+sp-core = { workspace = true, default-features = true }
 sp-wasm-interface = { features = ["wasmtime"], workspace = true, default-features = true }
 
 # Here we include the rustix crate in the exactly same semver-compatible version as used by

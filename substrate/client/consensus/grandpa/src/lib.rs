@@ -471,6 +471,9 @@ where
 	Client: ExecutorProvider<Block, Executor = E> + HeaderBackend<Block>,
 {
 	fn get(&self) -> Result<AuthorityList, ClientError> {
+		// TODO(remove)
+		log::info!(target: "wasm-heap", "___ GenesisAuthoritySetProvider -> (context Offchain, first block only)");
+
 		self.executor()
 			.call(
 				self.expect_block_hash_from_id(&BlockId::Number(Zero::zero()))?,

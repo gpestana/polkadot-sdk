@@ -34,6 +34,7 @@ use sc_executor_common::{
 };
 use sp_runtime_interface::unpack_ptr_and_len;
 use sp_wasm_interface::{HostFunctions, Pointer, WordSize};
+use sp_core::traits::CallContext;
 use std::{
 	path::{Path, PathBuf},
 	sync::{
@@ -137,6 +138,7 @@ pub struct WasmtimeRuntime {
 	instance_pre: Arc<wasmtime::InstancePre<StoreData>>,
 	instantiation_strategy: InternalInstantiationStrategy,
 	instance_counter: Arc<InstanceCounter>,
+	offchain_heap_max_allocation: Option<u32>,
 }
 
 impl WasmModule for WasmtimeRuntime {
@@ -149,7 +151,10 @@ impl WasmModule for WasmtimeRuntime {
 			}),
 		};
 
-		Ok(Box::new(WasmtimeInstance { strategy }))
+		Ok(Box::new(WasmtimeInstance {
+			strategy,
+			offchain_heap_max_allocation: self.offchain_heap_max_allocation,
+		}))
 	}
 }
 
@@ -157,6 +162,7 @@ impl WasmModule for WasmtimeRuntime {
 /// to execute the compiled code.
 pub struct WasmtimeInstance {
 	strategy: Strategy,
+	offchain_heap_max_allocation: Option<u32>,
 }
 
 impl WasmtimeInstance {
@@ -165,13 +171,19 @@ impl WasmtimeInstance {
 		method: &str,
 		data: &[u8],
 		allocation_stats: &mut Option<AllocationStats>,
+		context: CallContext,
 	) -> Result<Vec<u8>> {
+		// TODO(remove)
+		log::info!(target: "wasm-heap", "___ WasmtimeInstance::call_impl with context: {:?}", context);
+
 		match &mut self.strategy {
 			Strategy::RecreateInstance(ref mut instance_creator) => {
 				let mut instance_wrapper = instance_creator.instantiate()?;
 				let heap_base = instance_wrapper.extract_heap_base()?;
 				let entrypoint = instance_wrapper.resolve_entrypoint(method)?;
-				let allocator = FreeingBumpHeapAllocator::new(heap_base);
+				let offchain_heap_max_allocation = self.offchain_heap_max_allocation;
+				let allocator =
+					FreeingBumpHeapAllocator::new(heap_base, offchain_heap_max_allocation, context);
 
 				perform_call(data, &mut instance_wrapper, entrypoint, allocator, allocation_stats)
 			},
@@ -184,9 +196,10 @@ impl WasmInstance for WasmtimeInstance {
 		&mut self,
 		method: &str,
 		data: &[u8],
+		context: CallContext,
 	) -> (Result<Vec<u8>>, Option<AllocationStats>) {
 		let mut allocation_stats = None;
-		let result = self.call_impl(method, data, &mut allocation_stats);
+		let result = self.call_impl(method, data, &mut allocation_stats, context);
 		(result, allocation_stats)
 	}
 }
@@ -289,7 +302,7 @@ fn common_config(semantics: &Semantics) -> std::result::Result<wasmtime::Config,
 
 	config.memory_init_cow(use_cow);
 	config.memory_guaranteed_dense_image_size(match semantics.heap_alloc_strategy {
-		HeapAllocStrategy::Dynamic { maximum_pages } =>
+		HeapAllocStrategy::Dynamic { maximum_pages, .. } =>
 			maximum_pages.map(|p| p as u64 * WASM_PAGE_SIZE).unwrap_or(u64::MAX),
 		HeapAllocStrategy::Static { .. } => u64::MAX,
 	});
@@ -298,7 +311,7 @@ fn common_config(semantics: &Semantics) -> std::result::Result<wasmtime::Config,
 		const MAX_WASM_PAGES: u64 = 0x10000;
 
 		let memory_pages = match semantics.heap_alloc_strategy {
-			HeapAllocStrategy::Dynamic { maximum_pages } =>
+			HeapAllocStrategy::Dynamic { maximum_pages, .. } =>
 				maximum_pages.map(|p| p as u64).unwrap_or(MAX_WASM_PAGES),
 			HeapAllocStrategy::Static { .. } => MAX_WASM_PAGES,
 		};
@@ -631,11 +644,18 @@ where
 		.instantiate_pre(&module)
 		.map_err(|e| WasmError::Other(format!("cannot preinstantiate module: {:#}", e)))?;
 
+	// TODO: remove??
+	let offchain_heap_max_allocation = match config.semantics.heap_alloc_strategy {
+		HeapAllocStrategy::Static { offchain_heap_max_allocation, .. } => offchain_heap_max_allocation,
+		HeapAllocStrategy::Dynamic { offchain_heap_max_allocation, .. } => offchain_heap_max_allocation,
+	};
+
 	Ok(WasmtimeRuntime {
 		engine,
 		instance_pre: Arc::new(instance_pre),
 		instantiation_strategy,
 		instance_counter: Default::default(),
+		offchain_heap_max_allocation: offchain_heap_max_allocation,
 	})
 }
 
